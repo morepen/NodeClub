@@ -1,0 +1,300 @@
+var request = require('request');
+var EventProxy = require('eventproxy');
+//var crypto = require('crypto');
+var settings = require('../../settings.js');
+var FtpClient = require('ftp');
+var fs = require('fs');
+
+exports.GetApi = function(_req, _res, _callback, _errors) {
+    return {
+        db: require('../libs/mysql.js'), //数据库连接属性
+        req: _req,
+        res: _res,
+        cb: _callback,
+        getParam: function(param, _code) {
+            var code = _code || 4041;
+            if (typeof(_req.query[param]) === "undefined" && typeof(_req.body[param]) === "undefined")
+                throw code;
+            else if (!_req.query[param])
+                return _req.body[param];
+            else
+                return _req.query[param];
+        },
+        login: function() {
+            this.cb(200, 'ok');
+        },
+        pushid: function() {
+            this.cb(200, 'ok');
+        },
+        //查询案件信息
+        queryTask: function() {
+            var Me = this;
+            var taskNo, carNo, taskEndTime, timeStamp, sign;
+            taskNo = Me.getParam("taskNo", 40001);
+            carNo = Me.getParam("carNo", 40002);
+            timeStamp = Me.getParam("timeStamp", 40022);
+            sign = Me.getParam("sign", 40023);
+
+            //1、签名校验
+            if (!checkSign(taskNo, carNo, timeStamp, sign)) {
+                return cbError(50002, Me.cb);
+            }
+
+            //2、查询资料
+            var sqlCmd_query = "select taskNo,carNo,taskStartTime,taskEndTime,insuranceNo," +
+                "'中国人民财产保险股份有限公司' as insuranceCompany,insuranceAmount,'道路旅客运输承运人责任保险(ZJP)' as insuranceType,taskStatus " +
+                " from tasks where taskNo = ? and carNo = ?;";
+            var sqlCmd_query_params = [taskNo, carNo];
+
+            Me.db.query(sqlCmd_query, sqlCmd_query_params, function(err, result) {
+                if (err) {
+                    return cbError(51001, Me.cb);
+                } else {
+                    if (result.length > 0)
+                        return Me.cb(200, "", result[0]);
+                    else
+                        return cbError(43021, Me.cb)
+                }
+            });
+        }
+    };
+};
+
+var db = require('../libs/mysql.js');
+
+//引入AWS SDK包
+var AWS = require('aws-sdk');
+
+//创建s3对象
+var s3 = new AWS.S3(settings.bucket);
+
+//桶参数通用对象
+var BucketParams = function() {
+    return {
+        Bucket: settings.bucket._bucket
+    }
+}
+
+exports.Auto = function() {
+    queryFiles();
+    // testFTP();
+}
+
+function queryFiles() {
+    //查出所有未上传，但nasid > 0 （ 云存储默认用 -3 ）的文件
+    var sql = "select * from files where filepath != '' and (nasid != '99999' and nasid != '')";
+
+    sql += " and id in (2649,2650,2651,2652) ;"//测试
+
+    db.query(sql, [], function(err, result) {
+        if (err) {
+            console.log(err);
+            console.log("error : queryFiles / ", _consoleTime());
+            return setTimeout(() => {
+                queryFiles(); 
+            }, settings.transfer_interval);
+        } else {
+            console.log("success : queryFiles / length = " + result.length);
+            if (result.length > 0) {
+                s3service(result,0);
+            } else {
+                return setTimeout(() => {
+                    queryFiles(); 
+                }, settings.transfer_interval);
+            }
+        }
+    });
+}
+/*
+function checkUploadFile(files, index) {
+    //取出第一个文件的所在地址
+    var _file = files[index];
+    //fs判断文件是否在本地
+    var _ftpPath = getFilePath(_file);
+    //构建S3对象参数
+    var _s3Param = new BucketParams();
+    _s3Param.Key = _ftpPath;
+    //检查文件是否已经存在S3云存储中，否则上传。已存在则尝试调用回写路径。
+    s3.headObject(_s3Param, function(err, data) {
+         if(err){
+             if(err.code == "NotFound"){
+                console.log('NotFound');
+                //证明文件不存在
+                 fileUpload(_file);
+            } else {
+                console.log('todo: headObject err !');
+                return checkUploadFile(files,index++);//跳过错误文件。
+            }
+         } else {
+            console.log('HasFound');
+            return checkUploadFile(files,index++);
+         }
+      });
+    }
+
+//调用S3上传接口
+function fileUpload(_file,_callback){
+    var _ftpPath = getFilePath(_file);
+    ftp.on('ready', function() {
+        ftp.get(_ftpPath,function(err, stream) {
+            if (err) throw err;
+            stream.once('close', function() { 
+                fs.readFile('./tmpFile.tmp', function (err,data) {
+                    if (err) {
+                        return console.log(err);
+                    } else {
+                        var _s3Param = new BucketParams();
+                        _s3Param.Key = _ftpPath;
+                        _s3Param.Body = data;
+                        _s3Param.ACL= "public-read";
+                        console.log('readFile',_s3Param.Key)
+                        s3.putObject(_s3Param, function(err, resp) {
+                            if (err) {
+                                console.log('upload err');
+                                console.log(err, err.stack);
+                            } else {    
+                                console.log(resp);
+                                // { ETag: '"9cd245265c48a75424c1cbf8376d6f4a"' }
+                                ftp.delete(_ftpPath,function(err, currentDir) {
+                                    if (err) throw err;
+                                    console.log('currentDir:',currentDir);
+                                    ftp.end();
+                                });
+                            }
+                        });//s3.putObject
+                    }
+                });//fs readFile
+            });//stream.once('close'
+        stream.pipe(fs.createWriteStream('./tmpFile.tmp'));
+        });//ftp get
+    });//stream.once
+    ftp.connect(settings.ftp);    
+}
+
+//上传成功后，回写文件云存储路径。
+function fileUpdate(_file,_callback){
+
+    
+}
+//回写路径成功后，删除已保存的本地文件。
+function deleteFtpFile(){}
+
+*/
+
+//传入文件对象，获取文件路径
+function getFilePath(_file){
+    return _file.userid+"/"+_file.filename.substr(23,4)+"/"
+    +_file.filename.substr(27,2)+"/"+_file.filename.substr(29,2)+"/"+_file.filename;//'13/2019/02/03/RDZA201963280000000521_20190203180553109.jpg';
+    
+}
+
+//s3文件传输服务
+function s3service(files, index){
+    console.log('files.length:',files.length,' - index:',index, ' - ',_consoleTime());
+    if (files.length<=index){
+        // console.log('files.length:',files.length);
+        return setTimeout(() => {
+            queryFiles(); 
+        }, settings.transfer_interval);
+    }
+    var _file = files[index];
+
+    var _ftpPath = getFilePath(_file);
+
+    var ep = new EventProxy();
+
+    var _s3Param = new BucketParams();
+    _s3Param.Key = _ftpPath;
+    
+    //7.如果ep报错
+    ep.fail(function(err){
+        console.log('ep fail:',err);
+        return setTimeout(() => {
+            queryFiles(); 
+        }, settings.transfer_interval);
+    });
+
+    //6.更新完成，启动下一次服务
+    ep.once('next_file',function(){
+        // console.log(6);
+        s3service(files,++index);
+    });
+
+    //5.更新数据库
+    ep.once('update_mysql',function(){
+        // console.log(5);
+        var sqlCmd = "update files set filepath=?,nasid=99999 where id=?";
+        var sqlParams = ['s3/'+_ftpPath,_file.id];
+        db.query(sqlCmd,sqlParams,ep.done('next_file'));
+    });
+
+    //4.ftp删除任务
+    ep.once('ftp_delete',function(resp){
+        // console.log(4);
+        var ftp = new FtpClient();
+        ftp.on('ready', function() {
+            ftp.delete(_ftpPath,function(err, currentDir) {
+                if (err) throw err;
+                ftp.end();
+                ep.emit('update_mysql');
+            });
+        });
+        ftp.connect(settings.ftp);
+    });
+
+    //3.s3上传任务
+    ep.once('s3_putObject',function(data){
+        // console.log(3);
+        _s3Param.Body = data;
+        _s3Param.ACL= "public-read";
+        s3.putObject(_s3Param, ep.done('ftp_delete'));
+    });
+
+    //2.执行ftp get
+    ep.once('ftp_get',function(){
+        var ftp = new FtpClient();
+        ftp.on('ready', function() {
+            // console.log(3);
+            ftp.get(_ftpPath,function(err, stream) {
+                console.log('path:',_ftpPath);
+                if (err) throw err;
+                stream.once('close', function() { 
+                    fs.readFile('./tmpFile.tmp',ep.done('s3_putObject'));
+                    ftp.end();
+                });
+                stream.pipe(fs.createWriteStream('./tmpFile.tmp'));
+                // stream.pipe(fs.createWriteStream('./tmpFile.tmp').on('finish',function(){
+                //     fs.readFile('./tmpFile.tmp',ep.done('s3_putObject'));
+                // }));
+            });//ftp get
+        });//ftp on ready
+        ftp.connect(settings.ftp);
+    });
+
+    //1.检查
+    s3.headObject(_s3Param, function(err, data) {
+        if(err){
+            if(err.code == "NotFound"){
+                //如果云端不存在对应的文件
+               console.log('NotFound');
+               ep.emit('ftp_get');
+            // return s3service(files,++index);
+           } else {
+            console.log('headObject err:',err);
+            return s3service(files,++index);//跳过错误文件。
+           }
+        } else {
+            console.log('HasFound');
+        //    return s3service(files,++index);
+            ep.emit('ftp_delete');//存在则开始删除本地文件并更新
+        }
+     });
+}
+
+function _consoleTime() {
+    var consoleDay = new Date();
+    var consoleDayStr = consoleDay.getFullYear() + '-' + (consoleDay.getMonth() + 1) + '-' +
+        consoleDay.getDate() + ' ' + consoleDay.getHours() + ":" +
+        consoleDay.getMinutes() + ":" + consoleDay.getSeconds();
+    return consoleDayStr;
+}
